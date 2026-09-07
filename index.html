@@ -117,39 +117,51 @@ input,textarea,select{
 }
 
 
-/* ===== v0.4.2 iOS modal safe-area / tap-target hotfix ===== */
+
+
+/* ===== v0.4.3 iOS modal / keyboard / search layout fix ===== */
 :root{
   --modal-safe-top: env(safe-area-inset-top, 0px);
+  --modal-bar-h: 64px;
 }
-/* Installed iPhone web-app fallback: never place modal controls inside the status-bar hit area. */
-@media (display-mode: standalone) and (max-width: 600px){
+/* Standalone iPhone fallback when safe-area env is reported too small. */
+@media (display-mode: standalone) and (max-width:600px){
   :root{
-    --modal-safe-top: max(env(safe-area-inset-top, 0px), 44px);
+    --modal-safe-top:max(env(safe-area-inset-top, 0px), 50px);
   }
 }
 
-/* Every modal without a sticky action bar starts below the iPhone status area. */
-.modal .sheet{
-  padding-top: calc(var(--modal-safe-top) + 16px) !important;
-  scroll-padding-top: calc(var(--modal-safe-top) + 76px);
+/*
+  Important layout rule:
+  the WHOLE modal begins below the iPhone status area.
+  The sticky header itself therefore stays at top:0 inside the usable modal.
+  This avoids the previous "double safe-area" offset that could hide the search field.
+*/
+.modal{
+  top:calc(var(--vv-top, 0px) + var(--modal-safe-top)) !important;
+  height:calc(var(--vv-height, 100dvh) - var(--modal-safe-top)) !important;
+  min-height:0;
 }
-
-/* Routine editor / workout picker: reserve the safe area, then keep actions sticky below it. */
+.modal .sheet{
+  max-height:100% !important;
+  padding-top:16px !important;
+  scroll-padding-top:16px;
+}
 .modal .sheet.sheet-with-bar{
-  padding-top: var(--modal-safe-top) !important;
-  scroll-padding-top: calc(var(--modal-safe-top) + 84px);
+  padding-top:0 !important;
+  scroll-padding-top:calc(var(--modal-bar-h) + 74px);
 }
 .modal .sheetbar{
-  top: var(--modal-safe-top) !important;
-  z-index:80;
-  min-height:60px;
-  padding-top:12px;
-  padding-bottom:12px;
-  isolation:isolate;
+  top:0 !important;
+  z-index:90;
+  min-height:var(--modal-bar-h);
+  margin-bottom:10px;
+  padding:10px 16px;
+  flex:0 0 auto;
 }
 .modal .sheetbar-actions{
   position:relative;
-  z-index:2;
+  z-index:3;
   flex:0 0 auto;
 }
 .modal .sheetbar .btn{
@@ -166,24 +178,50 @@ input,textarea,select{
   line-height:1.2;
 }
 
-/* Finish sheet already had its own spacing; keep that spacing in addition to the safe area. */
-.modal .sheet.finish-sheet{
-  padding-top: calc(var(--modal-safe-top) + 22px) !important;
+/* Search dock: if iOS pans the sheet on keyboard focus, search can never disappear behind the header. */
+.modal .sheet-with-bar .modal-search-field{
+  position:sticky;
+  top:var(--modal-bar-h);
+  z-index:80;
+  margin:0 -4px 8px;
+  padding:6px 4px 8px;
+  background:linear-gradient(
+    180deg,
+    color-mix(in srgb,var(--panel) 98%,transparent),
+    color-mix(in srgb,var(--panel) 94%,var(--accent-soft))
+  );
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
+  border-bottom:1px solid color-mix(in srgb,var(--accent) 11%,transparent);
+}
+.modal .sheet-with-bar .modal-search-field input{
+  width:100%;
+  min-height:46px;
+  font-size:16px !important;
+  scroll-margin-top:calc(var(--modal-bar-h) + 14px) !important;
 }
 
-/* Plain modal headings / first controls must also stay tappable below the system status area. */
+/* Routine-name and other controls must also remain below the sticky action header. */
+.modal .sheet-with-bar input:not(#routineSearch):not(#exerciseSearch),
+.modal .sheet-with-bar textarea,
+.modal .sheet-with-bar select,
+.modal .sheet-with-bar button{
+  scroll-margin-top:calc(var(--modal-bar-h) + 16px) !important;
+}
+
+/* Plain modal contents start below the status area because the modal itself has already been shifted. */
+.modal .sheet.finish-sheet{
+  padding-top:22px !important;
+}
 .modal .sheet > h3:first-child,
 .modal .sheet > .section-title:first-child{
   position:relative;
   z-index:2;
 }
 
-/* Avoid a focused field being scrolled underneath a sticky modal header. */
-.modal input,
-.modal textarea,
-.modal select,
-.modal button{
-  scroll-margin-top:calc(var(--modal-safe-top) + 84px);
+/* Extra keyboard breathing room. */
+.modal .sheet{
+  padding-bottom:max(calc(22px + env(safe-area-inset-bottom)), 28px) !important;
 }
 
 </style>
@@ -416,31 +454,58 @@ function syncModalPageLock(){
   if(modal)lockPageForModal();
   else unlockPageFromModal();
 }
+function keepModalControlVisible(el){
+  if(!el || !el.closest)return;
+  const sheet=el.closest('.sheet');
+  if(!sheet)return;
+
+  const vv=window.visualViewport;
+  const viewportBottom=(vv ? vv.offsetTop+vv.height : window.innerHeight)-12;
+  const bar=sheet.querySelector('.sheetbar');
+  const topLimit=(bar ? bar.getBoundingClientRect().bottom : sheet.getBoundingClientRect().top)+10;
+  const r=el.getBoundingClientRect();
+
+  if(r.top < topLimit){
+    sheet.scrollTop += (r.top-topLimit-8);
+  }else if(r.bottom > viewportBottom){
+    sheet.scrollTop += (r.bottom-viewportBottom+10);
+  }
+}
+function resetModalScrollPosition(){
+  const sheet=document.querySelector('.modal .sheet');
+  if(!sheet)return;
+  requestAnimationFrame(()=>{
+    sheet.scrollTop=0;
+    requestAnimationFrame(()=>{ sheet.scrollTop=0; });
+  });
+}
 function bindInputViewportGuards(){
   const controls=$$('input,textarea,select');
   controls.forEach(el=>{
     el.addEventListener('focus',()=>{
       syncVisualViewport();
-      // iOS sometimes pans the layout viewport instead of the sheet.
-      // Keep scrolling local to the modal and only move enough to reveal the field.
-      if(el.closest('.sheet')){
-        setTimeout(()=>{
-          syncVisualViewport();
-          try{el.scrollIntoView({block:'nearest',inline:'nearest',behavior:'auto'})}catch{}
-        },80);
-      }
+      if(!el.closest('.sheet'))return;
+      setTimeout(()=>{syncVisualViewport();keepModalControlVisible(el)},60);
+      setTimeout(()=>{syncVisualViewport();keepModalControlVisible(el)},220);
     },{passive:true});
   });
 }
+function handleViewportMotion(){
+  syncVisualViewport();
+  const el=document.activeElement;
+  if(el && el.closest && el.closest('.sheet')){
+    setTimeout(()=>keepModalControlVisible(el),0);
+  }
+}
 syncVisualViewport();
-window.addEventListener('resize',syncVisualViewport,{passive:true});
-window.addEventListener('orientationchange',()=>setTimeout(syncVisualViewport,60),{passive:true});
+window.addEventListener('resize',handleViewportMotion,{passive:true});
+window.addEventListener('orientationchange',()=>setTimeout(handleViewportMotion,60),{passive:true});
 if(window.visualViewport){
-  window.visualViewport.addEventListener('resize',syncVisualViewport,{passive:true});
-  window.visualViewport.addEventListener('scroll',syncVisualViewport,{passive:true});
+  window.visualViewport.addEventListener('resize',handleViewportMotion,{passive:true});
+  window.visualViewport.addEventListener('scroll',handleViewportMotion,{passive:true});
 }
 
-function render(){clearInterval(timerTick);document.getElementById('app').innerHTML=shell(({home:homeView,history:historyView,stats:statsView,routines:routinesView,exercises:exercisesView}[view])());syncVisualViewport();syncModalPageLock();bind();bindInputViewportGuards();if(active()?.restTimer||active())timerTick=setInterval(updateLiveTimes,400)}
+function render(){clearInterval(timerTick);document.getElementById('app').innerHTML=shell(({home:homeView,history:historyView,stats:statsView,routines:routinesView,exercises:exercisesView}[view])());syncVisualViewport();syncModalPageLock();bind();bindInputViewportGuards();if(modal)resetModalScrollPosition();if(active()?.restTimer||active())timerTick=setInterval(updateLiveTimes,400)}
 function homeView(){const ses=active();if(ses)return workoutView(ses);const last=state.workouts.at(-1),saved=state.routines.filter(r=>r.exerciseIds?.length);return `<div class="card hero"><div class="eyebrow">TRAIN · TRACK · PROGRESS</div><h1>${new Intl.DateTimeFormat('ko-KR',{month:'long',day:'numeric',weekday:'short'}).format(new Date())}</h1><p class="muted">세트·RPE·실제 휴식시간을 빠르게 기록하세요.</p><button class="btn" id="startWorkout">운동 시작</button></div><div class="section-title"><h2>저장된 루틴</h2></div>${saved.length?`<div class="routine-home-grid">${saved.map(r=>`<button class="routine-home" data-start-routine="${r.id}">${escapeHtml(r.name)}<span>${r.exerciseIds.length}개 운동</span></button>`).join('')}</div>`:`<div class="card empty">저장된 루틴이 없습니다.<br>루틴 탭에서 새 루틴을 만들어보세요.</div>`}${last?`<div class="section-title"><h2>최근 운동</h2></div>${workoutSummaryCard(last)}`:''}`}
 function workoutView(ses){const m=sessionMetrics(ses);return `<div class="card"><div class="sessionbar"><div><div class="mini">운동 진행 중</div><div class="time mono" id="workoutClock">${fmtDur(workoutDuration(ses))}</div></div><div style="margin-left:auto" class="right"><div class="mini">본세트 ${m.sets}세트</div><strong class="volaccent">${fmtVolume(m.vol)}</strong></div></div></div>${ses.exercises.length?ses.exercises.map(exerciseSessionCard).join(''):'<div class="card empty">아직 운동이 없습니다.<br>아래 버튼으로 운동을 추가하세요.</div>'}<button class="btn secondary" id="addExerciseToSession" style="width:100%;margin:4px 0 12px">+ 운동 추가</button><div class="card"><div class="grid grid2"><div class="field"><label>컨디션</label><select id="condition">${['매우 좋음','좋음','보통','나쁨','매우 나쁨'].map(x=>`<option ${ses.condition===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><label>통증 메모</label><input id="pain" value="${escapeHtml(ses.pain)}" placeholder="예: 오른쪽 무릎 2/10"></div></div><div class="field" style="margin-top:10px"><label>오늘 메모</label><textarea id="sessionNotes" placeholder="느낀점, 자세, 다음 운동 메모 등">${escapeHtml(ses.notes)}</textarea></div></div><button class="btn danger" id="finishWorkout" style="width:100%">운동 종료</button>${renderTimer(ses)}`}
 function previousLine(exId,unit='kg'){const p=previousExercise(exId);if(!p)return '';const sets=p.es.sets.filter(s=>s.done&&!s.warmup).slice(0,5);if(!sets.length)return '';const txt=sets.map(s=>`${unitWeight(s.weightKg,unit)}${unit}×${s.reps}${s.rpe!==''?` @${s.rpe}`:''}`).join(' · ');return `<div class="lastperf"><strong>직전 ${fmtDate(p.workout.date)}</strong> · ${txt}</div>`}
@@ -461,10 +526,10 @@ function routinesView(){return `<div class="section-title"><h2>루틴</h2><butto
 function exercisesView(){return `<div class="section-title"><h2>운동 종목</h2></div><div class="searchbar"><input id="librarySearch" placeholder="운동명 · 기구 · 제조사 검색"><div class="library-count">기본 운동 ${libraryExercises.length}개 · 머신은 운동 종류 선택 후 제조사를 지정</div></div><div id="exerciseLibrary">${state.exercises.map(exerciseLibraryCard).join('')}</div><button class="fab" id="newExercise">+</button>`}
 function exerciseLibraryCard(x){return `<div class="card exercise-library-item" data-search="${escapeHtml(searchBlob(x))}"><div class="listrow"><div><strong>${escapeHtml(x.name)}</strong><div class="mini">${escapeHtml(x.equipment)} · 주동근 ${x.primary.join(', ')}</div>${isMachine(x)?'<div class="machine-note">◈ 운동 추가 시 제조사 선택 가능</div>':(x.brand?`<div class="machine-note">${escapeHtml(x.brand)}</div>`:'')}</div><button class="btn small secondary" data-edit-ex="${x.id}">편집</button></div></div>`}
 function renderModal(){if(!modal)return '';
- if(modal.type==='pickExercise'){modal.selected=modal.selected||[];modal.brands=modal.brands||{};return `<div class="modal" data-close-modal><div class="sheet sheet-with-bar" onclick="event.stopPropagation()"><div class="sheetbar"><h3>운동 추가</h3><div class="sheetbar-actions"><button class="btn secondary" id="cancelPickExercises">취소</button><button class="btn" id="confirmPickExercises">추가 <span id="pickCount">${modal.selected.length?`(${modal.selected.length})`:''}</span></button></div></div><div class="field"><input id="exerciseSearch" value="${escapeHtml(modal.query||'')}" placeholder="운동명 · 바벨 · 머신 · 제조사 검색"></div><div class="library-count">여러 운동을 한 번에 선택할 수 있습니다. 머신은 제조사 선택이 선택사항입니다.</div><div id="exercisePickList">${state.exercises.map(x=>{const on=modal.selected.includes(x.id);return `<div class="picker-row ${on?'selected':''}" data-pick-row="${x.id}" data-search="${escapeHtml(searchBlob(x))}"><button class="picker-main" data-pick-toggle="${x.id}"><div><strong>${escapeHtml(x.name)}</strong><div class="mini">${x.equipment} · ${x.primary.join(' · ')}</div></div><span class="picker-status">${on?'✓ 선택됨':'＋ 선택'}</span></button>${isMachine(x)?`<select class="brand-select" data-pick-brand="${x.id}">${machineBrandOptions(modal.brands[x.id]||'')}</select>`:''}</div>`}).join('')}</div></div></div>`}
+ if(modal.type==='pickExercise'){modal.selected=modal.selected||[];modal.brands=modal.brands||{};return `<div class="modal" data-close-modal><div class="sheet sheet-with-bar" onclick="event.stopPropagation()"><div class="sheetbar"><h3>운동 추가</h3><div class="sheetbar-actions"><button class="btn secondary" id="cancelPickExercises">취소</button><button class="btn" id="confirmPickExercises">추가 <span id="pickCount">${modal.selected.length?`(${modal.selected.length})`:''}</span></button></div></div><div class="field modal-search-field"><input id="exerciseSearch" value="${escapeHtml(modal.query||'')}" placeholder="운동명 · 바벨 · 머신 · 제조사 검색"></div><div class="library-count">여러 운동을 한 번에 선택할 수 있습니다. 머신은 제조사 선택이 선택사항입니다.</div><div id="exercisePickList">${state.exercises.map(x=>{const on=modal.selected.includes(x.id);return `<div class="picker-row ${on?'selected':''}" data-pick-row="${x.id}" data-search="${escapeHtml(searchBlob(x))}"><button class="picker-main" data-pick-toggle="${x.id}"><div><strong>${escapeHtml(x.name)}</strong><div class="mini">${x.equipment} · ${x.primary.join(' · ')}</div></div><span class="picker-status">${on?'✓ 선택됨':'＋ 선택'}</span></button>${isMachine(x)?`<select class="brand-select" data-pick-brand="${x.id}">${machineBrandOptions(modal.brands[x.id]||'')}</select>`:''}</div>`}).join('')}</div></div></div>`}
  if(modal.type==='exerciseForm'){const x=modal.id?exById(modal.id):normalizeExercise({name:'',equipment:'바벨',primary:[],secondary:[],brand:'',tracking:'strength',loadMode:'external',warmupRest:60,workingRest:180});return `<div class="modal" data-close-modal><div class="sheet" onclick="event.stopPropagation()"><h3>${modal.id?'운동 편집':'새 운동 추가'}</h3><div class="field"><label>운동 이름</label><input id="exName" value="${escapeHtml(x.name)}"></div><div class="grid grid2" style="margin-top:10px"><div class="field"><label>기구</label><select id="exEquip">${EQUIP.map(e=>`<option ${x.equipment===e?'selected':''}>${e}</option>`).join('')}</select></div><div class="field"><label>제조사/브랜드 (선택)</label><input id="exBrand" value="${escapeHtml(x.brand||'')}" placeholder="예: Star Trac"></div></div><div class="grid grid2" style="margin-top:10px"><div class="field"><label>기록 방식</label><select id="exTracking"><option value="strength" ${x.tracking==='strength'?'selected':''}>근력/웨이트</option><option value="cardio" ${x.tracking==='cardio'?'selected':''}>유산소</option></select></div><div class="field"><label>중량 방식</label><select id="exLoadMode"><option value="external" ${x.loadMode==='external'?'selected':''}>외부 중량</option><option value="bodyweight_add" ${x.loadMode==='bodyweight_add'?'selected':''}>체중 + 추가중량</option><option value="bodyweight" ${x.loadMode==='bodyweight'?'selected':''}>체중</option><option value="assisted" ${x.loadMode==='assisted'?'selected':''}>체중 - 어시스트</option></select></div></div><div class="field" style="margin-top:10px"><label>주동근 (복수 선택 가능)</label><div class="chips" id="primaryMuscles">${MUSCLES.map(m=>`<button class="chip ${x.primary.includes(m)?'on':''}" data-muscle="primary|${m}">${m}</button>`).join('')}</div></div><div class="field" style="margin-top:10px"><label>보조근</label><div class="chips" id="secondaryMuscles">${MUSCLES.map(m=>`<button class="chip ${x.secondary.includes(m)?'on':''}" data-muscle="secondary|${m}">${m}</button>`).join('')}</div></div><div class="grid grid2" style="margin-top:10px"><div class="field"><label>워밍업 기본 휴식</label><select id="exWarmRest">${restOptions(x.warmupRest)}</select></div><div class="field"><label>본세트 기본 휴식</label><select id="exWorkRest">${restOptions(x.workingRest)}</select></div></div><button class="btn" id="saveExercise" style="width:100%;margin-top:14px">저장</button></div></div>`}
- if(modal.type==='routine'){const r=modal.id?state.routines.find(x=>x.id===modal.id):null;if(!modal.selected)modal.selected=[...(r?.exerciseIds||[])];modal.brands=modal.brands||{...(r?.manufacturers||{})};return `<div class="modal" data-close-modal><div class="sheet sheet-with-bar" onclick="event.stopPropagation()"><div class="sheetbar"><h3>${modal.id?'루틴 편집':'새 루틴'}</h3><div class="sheetbar-actions"><button class="btn secondary" id="cancelRoutine">취소</button><button class="btn" id="saveRoutine">저장</button></div></div><div class="field"><label>루틴 이름</label><input id="routineName" value="${escapeHtml(modal.nameDraft??r?.name??'')}" placeholder="예: 밀기"></div><div class="routine-selected"><div class="routine-selected-title"><strong>선택된 운동</strong><span class="mini" id="routineSelectedCount">${modal.selected.length}개</span></div><div class="routine-chips" id="routineSelected">${routineSelectedHtml(modal.selected)}</div></div><div class="field"><input id="routineSearch" value="${escapeHtml(modal.query||'')}" placeholder="운동명 · 기구 · 제조사 검색"></div><div class="hr"></div><div id="routineList">${state.exercises.map(x=>{const on=modal.selected.includes(x.id);return `<div class="picker-row routine-ex-item ${on?'selected':''}" data-routine-row="${x.id}" data-search="${escapeHtml(searchBlob(x))}"><button class="picker-main" data-routine-toggle="${x.id}"><div><strong>${escapeHtml(x.name)}</strong><div class="mini">${x.equipment}</div></div><span class="routine-status">${on?'✓ 추가됨':'＋ 추가'}</span></button>${isMachine(x)?`<select class="brand-select" data-routine-brand="${x.id}">${machineBrandOptions(modal.brands[x.id]||'')}</select>`:''}</div>`}).join('')}</div>${modal.id?'<button class="delete-routine" id="deleteRoutine">이 루틴 삭제</button>':''}</div></div>`}
- if(modal.type==='settings')return `<div class="modal" data-close-modal><div class="sheet" onclick="event.stopPropagation()"><h3>환경설정</h3><div class="card"><div class="settingsrow"><div><strong>기본 체중</strong><div class="mini">풀업·딥스 등 체중 운동의 총 부하 계산에 사용</div></div><div style="width:126px" class="field"><input id="bodyWeight" inputmode="decimal" value="${unitWeight(state.settings.bodyWeightKg,summaryUnit())}"><button class="summary-unit" data-summary-unit>${summaryUnit().toUpperCase()}</button></div></div><div class="settingsrow"><div><strong>보조근 세트도 부위 통계에 포함</strong><div class="mini">기본값은 주동근만 집계</div></div><button class="toggle ${state.settings.countSecondary?'on':''}" id="secondaryToggle"></button></div><div class="settingsrow"><div><strong>휴식 종료 알림</strong><div class="mini">지원 기기에서 소리/진동</div></div><button class="toggle ${state.settings.restAlerts?'on':''}" id="restAlertToggle"></button></div></div><div class="section-title"><h2>백업 / 복원</h2></div><div class="card"><p class="muted">기기를 바꾸거나 Safari 데이터를 지우기 전에 백업 파일을 보관하세요.</p><div class="grid grid2"><button class="btn secondary" id="exportBtn">백업 내보내기</button><button class="btn secondary" id="importBtn">백업 불러오기</button><input id="importFile" type="file" accept="application/json" hidden></div></div><div class="mini" style="text-align:center;margin-top:14px">LiftLog v0.4.2</div></div></div>`;
+ if(modal.type==='routine'){const r=modal.id?state.routines.find(x=>x.id===modal.id):null;if(!modal.selected)modal.selected=[...(r?.exerciseIds||[])];modal.brands=modal.brands||{...(r?.manufacturers||{})};return `<div class="modal" data-close-modal><div class="sheet sheet-with-bar" onclick="event.stopPropagation()"><div class="sheetbar"><h3>${modal.id?'루틴 편집':'새 루틴'}</h3><div class="sheetbar-actions"><button class="btn secondary" id="cancelRoutine">취소</button><button class="btn" id="saveRoutine">저장</button></div></div><div class="field"><label>루틴 이름</label><input id="routineName" value="${escapeHtml(modal.nameDraft??r?.name??'')}" placeholder="예: 밀기"></div><div class="routine-selected"><div class="routine-selected-title"><strong>선택된 운동</strong><span class="mini" id="routineSelectedCount">${modal.selected.length}개</span></div><div class="routine-chips" id="routineSelected">${routineSelectedHtml(modal.selected)}</div></div><div class="field modal-search-field"><input id="routineSearch" value="${escapeHtml(modal.query||'')}" placeholder="운동명 · 기구 · 제조사 검색"></div><div class="hr"></div><div id="routineList">${state.exercises.map(x=>{const on=modal.selected.includes(x.id);return `<div class="picker-row routine-ex-item ${on?'selected':''}" data-routine-row="${x.id}" data-search="${escapeHtml(searchBlob(x))}"><button class="picker-main" data-routine-toggle="${x.id}"><div><strong>${escapeHtml(x.name)}</strong><div class="mini">${x.equipment}</div></div><span class="routine-status">${on?'✓ 추가됨':'＋ 추가'}</span></button>${isMachine(x)?`<select class="brand-select" data-routine-brand="${x.id}">${machineBrandOptions(modal.brands[x.id]||'')}</select>`:''}</div>`}).join('')}</div>${modal.id?'<button class="delete-routine" id="deleteRoutine">이 루틴 삭제</button>':''}</div></div>`}
+ if(modal.type==='settings')return `<div class="modal" data-close-modal><div class="sheet" onclick="event.stopPropagation()"><h3>환경설정</h3><div class="card"><div class="settingsrow"><div><strong>기본 체중</strong><div class="mini">풀업·딥스 등 체중 운동의 총 부하 계산에 사용</div></div><div style="width:126px" class="field"><input id="bodyWeight" inputmode="decimal" value="${unitWeight(state.settings.bodyWeightKg,summaryUnit())}"><button class="summary-unit" data-summary-unit>${summaryUnit().toUpperCase()}</button></div></div><div class="settingsrow"><div><strong>보조근 세트도 부위 통계에 포함</strong><div class="mini">기본값은 주동근만 집계</div></div><button class="toggle ${state.settings.countSecondary?'on':''}" id="secondaryToggle"></button></div><div class="settingsrow"><div><strong>휴식 종료 알림</strong><div class="mini">지원 기기에서 소리/진동</div></div><button class="toggle ${state.settings.restAlerts?'on':''}" id="restAlertToggle"></button></div></div><div class="section-title"><h2>백업 / 복원</h2></div><div class="card"><p class="muted">기기를 바꾸거나 Safari 데이터를 지우기 전에 백업 파일을 보관하세요.</p><div class="grid grid2"><button class="btn secondary" id="exportBtn">백업 내보내기</button><button class="btn secondary" id="importBtn">백업 불러오기</button><input id="importFile" type="file" accept="application/json" hidden></div></div><div class="mini" style="text-align:center;margin-top:14px">LiftLog v0.4.3</div></div></div>`;
  if(modal.type==='finishWorkout')return `<div class="modal" data-close-modal><div class="sheet finish-sheet" onclick="event.stopPropagation()"><div class="finish-hero"><div class="mini">현재 운동</div><strong>운동을 어떻게 처리할까요?</strong><div class="mini" style="margin-top:5px">저장하면 오늘 기록에 추가되고, 삭제하면 작성 중인 내용이 사라집니다.</div></div><div class="finish-actions"><button class="btn" id="confirmFinishWorkout">운동을 종료하고 저장</button><button class="btn keep" id="keepWorkout">운동을 종료하지 않음</button><button class="btn delete" id="deleteActiveWorkout">운동 삭제</button></div></div></div>`
  if(modal.type==='workoutDetail'){const w=state.workouts.find(x=>x.id===modal.id);if(!w)return '';const m=sessionMetrics(w),u=summaryUnit();return `<div class="modal" data-close-modal><div class="sheet" onclick="event.stopPropagation()"><div class="section-title" style="margin-top:0"><h2>${fmtDate(w.date)} 운동</h2><button class="summary-unit" data-summary-unit>${u.toUpperCase()}</button></div><div class="grid grid3"><div class="metric"><span class="mini">운동시간</span><strong>${fmtDur(workoutDuration(w))}</strong></div><div class="metric"><span class="mini">본세트</span><strong>${m.sets}</strong></div><div class="metric"><span class="mini">볼륨</span><strong>${fmtVolume(m.vol,u)}</strong></div></div>${w.exercises.map(es=>{const x=exById(es.exerciseId);if(x?.tracking==='cardio')return `<div class="exercise"><strong>${escapeHtml(x.name)}</strong>${es.sets.map((s,i)=>`<div class="listrow"><div>#${i+1} · ${s.durationMin||0}분${s.distanceKm?` · ${s.distanceKm}km`:''}${s.rpe!==''?` · RPE ${s.rpe}`:''}</div><div class="mini">${s.done?'완료':'미완료'}</div></div>`).join('')}</div>`;return `<div class="exercise"><strong>${escapeHtml(x?.name||'삭제된 운동')}</strong><div class="mini">${escapeHtml(es.note||'')}</div>${es.sets.map((s,i)=>`<div class="listrow ${s.warmup?'warmrow':''}"><div>${s.warmup?'W':'본'} #${i+1} · ${unitWeight(s.weightKg,u)}${u} × ${s.reps||0}${s.rpe!==''?` · RPE ${s.rpe}`:''}${s.prWeight||s.prE1RM?' · PR':''}</div><div class="right mini">${s.done?'완료':'미완료'}${s.restActualSec!=null?`<br>실제 휴식 ${fmtTime(s.restActualSec)}`:''}</div></div>`).join('')}</div>`}).join('')}<div class="card"><strong>컨디션</strong><p class="muted">${escapeHtml(w.condition||'-')}</p><strong>통증</strong><p class="muted">${escapeHtml(w.pain||'-')}</p><strong>메모</strong><p class="muted">${escapeHtml(w.notes||'-')}</p></div><button class="btn danger" data-delete-workout="${w.id}" style="width:100%">이 기록 삭제</button></div></div>`}
  return ''}
